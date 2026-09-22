@@ -111,6 +111,11 @@ CHAR_EQUIV = {
 }
 
 _ZERO_WORDS = [("ゼロ", "〇"), ("零", "〇"), ("れい", "〇")]
+# pyopenjtalk reads a bare letter name シー (C) as スィー when the katakana
+# stands alone in a gold reading, but as シー when the pipeline has glued it to
+# a number, so "シー八" and "シーハチ" disagree in pronunciation space for no
+# reason. Same letter; folded like the zero spellings above.
+_KANA_EQUIV = [("スィ", "シ")]
 # の / ー / - between digit groups are all read as the same pause.
 _SEPARATORS = "のー-‐−–—ｰ"
 _DROP_ONE_RE = re.compile(r"一(?=[十百千])")
@@ -123,7 +128,7 @@ def canon(text: str) -> str:
     punctuation (Japanese is written without spaces, so this is a plain
     character stream)."""
     text = unicodedata.normalize("NFKC", text)
-    for src, dst in _ZERO_WORDS:
+    for src, dst in _ZERO_WORDS + _KANA_EQUIV:
         text = text.replace(src, dst)
     text = _DROP_ONE_RE.sub("", text)
     for ch in _SEPARATORS:

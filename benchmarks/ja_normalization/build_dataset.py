@@ -401,6 +401,40 @@ def gen_serial(i: int) -> dict:
     return make_case(f"ser{i}", "serial", raw, readings)
 
 
+# Letter names, with every variant that is standard, so the benchmark measures
+# the reading rather than one dictionary's spelling of it (canon() strips the
+# long-vowel mark, so エー and エイ are *not* folded together by scoring).
+LETTER_NAMES = {
+    "A": ["エー", "エイ"], "B": ["ビー"], "C": ["シー"], "D": ["ディー"],
+    "E": ["イー"], "F": ["エフ"], "G": ["ジー"], "H": ["エイチ", "エッチ"],
+    "I": ["アイ"], "J": ["ジェー", "ジェイ"], "K": ["ケー", "ケイ"], "L": ["エル"],
+    "M": ["エム"], "N": ["エヌ"], "O": ["オー"], "P": ["ピー"], "Q": ["キュー"],
+    "R": ["アール"], "S": ["エス"], "T": ["ティー"], "U": ["ユー"],
+    "V": ["ブイ", "ヴィ"], "W": ["ダブリュー"], "X": ["エックス"], "Y": ["ワイ"],
+    "Z": ["ゼット", "ズィー"],
+}
+# Single capitals tn.japanese's measure grammar verbalizes as units after a
+# number (ampere, volt, watt, litre, newton, joule): "4V" is legitimately
+# volts, so those never take the trailing position here.
+TRAILING_UNIT_LETTERS = set("AVWLNJ")
+
+
+def gen_alnum(i: int) -> dict:
+    """Digit+letter codes (4R, 12K) and letter+digit codes (A4, B5): one
+    token, read as the number plus the letter's name."""
+    n = RNG.randint(1, 99)
+    if RNG.random() < 0.5:
+        letter = RNG.choice([c for c in sorted(LETTER_NAMES)
+                             if c not in TRAILING_UNIT_LETTERS])
+        raw = f"{n}{letter}"
+        readings = [f"{read_int(n)}{name}" for name in LETTER_NAMES[letter]]
+    else:
+        letter = RNG.choice(sorted(LETTER_NAMES))
+        raw = f"{letter}{n}"
+        readings = [f"{name}{read_int(n)}" for name in LETTER_NAMES[letter]]
+    return make_case(f"aln{i}", "alnum", raw, readings)
+
+
 MIXED = [
     "{d}に{money}円の商品を{cnt}個購入しました。",
     "{time}から会場は{pct}%の入りで、気温は{t}℃でした。",
@@ -462,6 +496,9 @@ GENERATORS: Dict[str, Callable[[int], dict]] = {
     "score": gen_score,
     "serial": gen_serial,
     "mixed": gen_mixed,
+    # Appended last on purpose: generation is insertion-ordered from one seeded
+    # RNG, so every earlier category's rows stay byte-identical.
+    "alnum": gen_alnum,
 }
 
 

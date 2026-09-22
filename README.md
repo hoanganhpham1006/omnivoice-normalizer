@@ -111,8 +111,25 @@ The Japanese path does more than digit-to-kanji conversion:
   (`09012345678`, or any other 9+-digit run with no comma grouping) — a
   written phone number measures better heard-correctly than any spelled-out
   alternative.
+- **Capital letters attached to a number** get their letter-name reading
+  together with the digits (`4R` → ヨンアール, `A4` → エイヨン, `H2O` →
+  エイチニオー, `B5判` → ビーゴ判). The reading is `pyopenjtalk`'s own
+  dictionary entry for the letter, which its kana formatter otherwise drops.
+  Only a run of one to four capitals directly next to a rewritten digit run is
+  read this way; acronyms and Latin words anywhere else (`（EU）`, `USBメモリ`,
+  `Windows11`) are left exactly as written, and unit symbols (`4V`, `10KB`)
+  are still read as units.
 
 **Deliberately out of scope** (documented, not silent bugs):
+- Lexicalised English-number forms keep a Japanese number reading: `F1` →
+  エフイチ (not エフワン), `3D` → サンディー, `5G` → ゴジー. A per-deployment
+  override table is the right place for these, not the generic rule.
+- Floor-plan codes: `4LDK` is read as four litres plus the letters
+  (`ヨンリットルディーケイ`) because the library's measure grammar consumes `4L`
+  before this module sees it.
+- `pyopenjtalk` occasionally misreads a kanji numeral once a letter is glued
+  to it: `13M` → ジューソーエム (十三 taken as the Osaka place name), `M18` →
+  エムワンハチ. Measured at 6 of 400 cases in the benchmark's `alnum` category.
 - A decimal tail on a ≥1億 amount (`"1,500,000,000.5"`) is left completely
   untouched rather than partially converted.
 - Numbers ≥京 (10¹⁶) are left untouched — `pyopenjtalk` was empirically found
@@ -143,7 +160,7 @@ python bench.py                  # baseline vs. raw library vs. this module, sco
 python conformance.py            # runs WeTextProcessing's own test pairs through this wrapper
 ```
 
-`data/gold.jsonl` (10,000 synthetic carrier sentences across 25 categories,
+`data/gold.jsonl` (10,400 synthetic carrier sentences across 26 categories,
 with readings generated independently by `ja_reading.py`) and `data/real.jsonl`
 (real-world sentences for reference-free metrics) ship pre-built.
 

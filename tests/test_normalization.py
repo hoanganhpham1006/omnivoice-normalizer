@@ -174,6 +174,71 @@ class NormalizerBehaviourTests(unittest.TestCase):
         out, _, _ = text_normalization.normalize("jp", "電話は090-1234-5678です。")
         self.assertIn("090-1234-5678", out)
 
+    def test_japanese_letter_after_digit_is_read_by_name(self) -> None:
+        """A capital letter right after a digit run is part of the same token
+        (4R, 4K) and must get its letter-name reading together with the
+        digits - the model was heard saying "Four アール" for a bare "4R". The
+        reading is the dictionary's own; pyopenjtalk's kana formatter merely
+        drops it."""
+        for text, reading in (
+            ("4R", "ヨンアール"),
+            ("部屋は4Rです。", "ヨンアール"),
+            ("12R", "ジューニアール"),
+            ("4K", "ヨンケイ"),
+        ):
+            with self.subTest(text=text):
+                out, _, applied = text_normalization.normalize("jp", text)
+                self.assertTrue(applied)
+                self.assertIn(reading, out)
+                self.assertFalse(any("A" <= c <= "Z" for c in out), out)
+
+    def test_japanese_letter_before_digit_is_read_by_name(self) -> None:
+        """The same for a letter run *before* the digits (A4, B5, H2O): the
+        letters are pulled into the digits' kana span out of the preceding
+        untouched text."""
+        for text, reading in (
+            ("A4サイズ", "エイヨンサイズ"),
+            ("B5判", "ビーゴ判"),
+            ("H2O", "エイチニオー"),
+        ):
+            with self.subTest(text=text):
+                out, _, applied = text_normalization.normalize("jp", text)
+                self.assertTrue(applied)
+                self.assertIn(reading, out)
+
+    def test_japanese_units_and_latin_words_are_not_read_as_letters(self) -> None:
+        """Unit symbols are verbalized by the grammar before the kana step
+        (4V is volts, not ブイ), and a Latin word next to a number is left for
+        the model - only a run of at most four capitals is ever folded."""
+        for text, expected in (
+            ("4V", "ヨンボルト"),
+            ("10KB", "ジュッキロバイト"),
+            ("100km", "ヒャッキロメートル"),
+            ("USBメモリ", "USBメモリ"),
+            ("Windows11", "Windows"),
+            ("iPhone 15", "iPhone "),
+        ):
+            with self.subTest(text=text):
+                out, _, _ = text_normalization.normalize("jp", text)
+                self.assertIn(expected, out)
+
+    def test_japanese_acronym_next_to_punctuation_stays_raw(self) -> None:
+        """tn.japanese folds （） to ASCII, so a parenthesis is itself a
+        rewritten chunk in the diff. The letter fold must key off a rewritten
+        *digit* run; otherwise every parenthesised acronym gets read as letter
+        names (measured: 102 vs 41 changed real sentences)."""
+        out, _, _ = text_normalization.normalize("jp", "欧州連合（EU）は45%です。")
+        self.assertIn("（EU）", out)
+        self.assertIn("ヨンジューゴパーセント", out)
+
+    def test_japanese_kana_reading_keeps_dictionary_letter_names(self) -> None:
+        """_to_kana must match pyopenjtalk.g2p(kana=True) except that alphabet
+        symbols keep their pronunciation: other symbols still come back as
+        written, and the devoiced-mora mark is stripped as g2p does."""
+        self.assertEqual(text_normalization._to_kana("四R"), "ヨンアール")
+        self.assertEqual(text_normalization._to_kana("X"), "エックス")
+        self.assertEqual(text_normalization._to_kana("("), "（")
+
     def test_plain_sentences_are_left_alone(self) -> None:
         """A sentence with nothing to normalize must come back byte-identical,
         so enabling the layer cannot change prosody on ordinary traffic."""

@@ -26,13 +26,13 @@ the thing that actually ships:
 
 ## Dataset
 
-**Track A — `data/gold.jsonl` (10,000 cases).** Japanese carrier sentences, each
+**Track A — `data/gold.jsonl` (10,400 cases).** Japanese carrier sentences, each
 containing one non-standard word whose accepted spoken form is known by
-construction: 25 categories × 400 — cardinals (plain, comma-grouped, full-width
+construction: 26 categories × 400 — cardinals (plain, comma-grouped, full-width
 `１２３`), decimals, negatives, fractions, percentages, JPY and foreign money,
 full and partial dates, times, ranges, mobile and landline phone numbers,
 measures, counters (`3人`, `4部`, `5匹`), ordinals, maths, symbols, emoji, sport
-scores, serial codes and multi-NSW sentences.
+scores, serial codes, multi-NSW sentences and alphanumeric codes (`4R`, `A4`).
 
 **Track B — `data/real.jsonl` (3,000 sentences).** Real Japanese Wikipedia
 sentences containing NSWs, pulled through the HF datasets-server. No reference
@@ -65,7 +65,15 @@ answers a different question from the benchmark: not "is the library good
 enough" but "are we driving it the way its authors intended". Any mismatch
 means our configuration changed the library's documented behaviour.
 
-**Result: 141/141 pairs match.**
+**Result: 141/141 pairs matched** when the wrapper still emitted the library's
+kanji verbatim. **Today it is 4/141**, and that is expected: the wrapper now
+deliberately diverges from the raw library output (kana readings for rewritten
+fragments, protected phone numbers, corrected large numbers — see below), so
+the script measures that divergence, not a regression. Use it as a diff, not a
+gate: after a change, run it before and after and read the pairs that *moved*.
+The letter-reading rule below moved three pairs, all in the intended direction
+(`P2P` → `ピーツーピー`, `B2B` → `ビーツービー`, `R-18` → `アールジューハチ`; they
+were `PツーP`, `BツーB`, `Rジューハチ`).
 
 ## Wrapper rules, and why each exists
 
@@ -92,6 +100,20 @@ helped:
   Vietnamese side, so this keeps the two endpoints consistent. Deliberately
   narrow — dropping a unit sign like `°` would silently change meaning, so
   those stay visible as a known gap instead.
+- **Letters glued to digits read by name.** `4R` came back as `ヨンR`: the
+  dictionary knows `Ｒ` is アール, but `pyopenjtalk.g2p(kana=True)` emits the
+  surface string for every symbol token and letters are filed as symbols. The
+  kana step now reads the dictionary directly, and a run of one to four
+  capitals touching a rewritten digit run is folded into that reading
+  (`ヨンアール`, `エイヨンサイズ`, `エイチニオー`). The fold is keyed on rewrites that
+  replaced *digits*: with `full_to_half` every `（EU）` is also "adjacent to a
+  rewrite", and keying on that read every parenthesised acronym as letter
+  names (102 changed real sentences vs 41 with the digit key, all 41 genuine
+  alphanumeric tokens). Measured effect: new `alnum` category 22.0% → 98.0%;
+  0 of the 10,000 pre-existing gold outputs change; 41 of 3,000 real sentences
+  change. The remaining `alnum` misses are `pyopenjtalk` misreading a numeral
+  once a letter is glued to it (`13M` → ジューソーエム). Evidence in
+  `../../docs/research/ja-letter-readings.md`.
 
 ## Reproduce
 
@@ -260,6 +282,12 @@ Three things to read carefully here:
 - **The higher leak is deliberate.** Phone numbers stay as written digits
   (+4pp) because the model reads them better that way; the remainder is the
   symbol category, which neither pipeline expands.
+
+The three-arm table above is the historical measurement on the original
+10,000 cases and is kept for that comparison. The shipped pipeline re-run on
+today's 10,400-case set (after the letter-reading rule) scores 87.4% accuracy,
+2.2% error rate and 12.8% leak; the per-category numbers for the 25 original
+categories are identical to the run before that rule.
 
 ### Cost
 

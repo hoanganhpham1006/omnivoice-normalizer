@@ -177,6 +177,15 @@ def _ja_restore_punctuation(original: str, out: str) -> str:
 # of sentences heard correctly, against 81% for this approach): all-kana text
 # is itself unusual input, and it throws away the word boundaries and kanji
 # semantics the model relies on.
+#
+# The same dictionary also owns the reading of a Latin letter (Ｒ -> アール,
+# pos 記号/アルファベット), which is what a digit+letter token like "4R" needs:
+# the model was heard saying "Four アール" for it. pyopenjtalk's own
+# g2p(kana=True) formatter throws that reading away - it substitutes the
+# surface string for every 記号 token - so _to_kana walks run_frontend()
+# itself and keeps the pronunciation for alphabet symbols only. Everything
+# else is formatted exactly as g2p would (verified identical on 8,720 real
+# fragments; see docs/research/ja-letter-readings.md).
 
 
 @functools.lru_cache(maxsize=1)
@@ -188,15 +197,28 @@ def _openjtalk():
 
 
 def _to_kana(text: str) -> str:
-    """Katakana reading of one fragment. Returns it unchanged on failure."""
+    """Katakana reading of one fragment. Returns it unchanged on failure.
+
+    Mirrors ``pyopenjtalk.g2p(text, kana=True)`` - which is itself just this
+    walk over ``run_frontend()`` - except that an alphabet symbol keeps its
+    dictionary pronunciation instead of its surface form (see above).
+    """
     if not text or not text.strip():
         return text
     try:
-        kana = _openjtalk().g2p(text, kana=True)
+        parts = []
+        for feature in _openjtalk().run_frontend(text):
+            if feature["pos"] == "記号" and feature.get("pos_group1") != "アルファベット":
+                parts.append(feature["string"])  # punctuation etc.: as written
+            else:
+                parts.append(feature["pron"])
+        # g2p strips this too: the dictionary marks a devoiced mora with it
+        # (X -> エック’ス).
+        kana = "".join(parts).replace("’", "")
     except Exception as exc:  # noqa: BLE001
         log.warning("kana reading failed for %r (%s); keeping original", text[:40], exc)
         return text
-    return kana if isinstance(kana, str) and kana.strip() else text
+    return kana if kana.strip() else text
 
 
 # A source sentence almost always spells the counter/scale word itself
@@ -229,6 +251,22 @@ _JA_COUNTER_RE = re.compile(
     "|".join(re.escape(s) for s in sorted(_JA_COUNTER_SUFFIXES, key=len, reverse=True))
 )
 
+# The same applies to a short run of capital letters on either side of a
+# rewritten digit run: "4R", "A4", "H2O", "B5判", "ISO9001" are one token, and
+# the dictionary reads digit and letter together only if it sees both (the
+# digit alone comes back as ヨン and the letter is never rewritten at all).
+# Capped at four letters and uppercase-only, so a Latin word next to a number
+# (Windows11, COVID19, Type2, iPhone 15) is never touched.
+#
+# Crucially the fold is gated on the neighbouring rewrite having replaced
+# *digits* in the source, not on there being a rewrite at all: tn.japanese's
+# full_to_half also rewrites （ ） and other width variants, and folding next
+# to those reads every parenthesised acronym (（GDP）, （EU）) as letter names.
+# Measured on the real-text benchmark track: 102 sentences changed without
+# the gate, 41 with it, all 41 being genuine digit+letter tokens.
+_JA_LETTER_RUN_RE = re.compile(r"[A-Z]{1,4}(?![A-Za-z])")          # after the digits
+_JA_LEADING_LETTERS_RE = re.compile(r"(?<![A-Za-z])[A-Z]{1,4}$")    # before the digits
+
 
 def _ja_kana_spans(original: str, normalized: str) -> str:
     """Give a reading only to the fragments normalization rewrote.
@@ -236,21 +274,39 @@ def _ja_kana_spans(original: str, normalized: str) -> str:
     Everything the normalizer left alone is text the model already handles, so
     it is passed through untouched; only the rewritten fragments - a date, a
     money amount, a unit - are replaced by their katakana reading. A counter
-    suffix right after a rewritten digit run is folded into that reading too;
-    see ``_JA_COUNTER_SUFFIXES`` above for why.
+    suffix right after a rewritten digit run is folded into that reading too,
+    as is a short capital-letter run on either side of one; see
+    ``_JA_COUNTER_SUFFIXES`` and ``_JA_LETTER_RUN_RE`` above for why.
     """
     import difflib
 
     opcodes = list(
         difflib.SequenceMatcher(None, original, normalized, autojunk=False).get_opcodes()
     )
+    # Which rewrites replaced digits in the source - the only ones allowed to
+    # pull neighbouring letters into their span.
+    rewrote_digits = [
+        tag != "equal" and any(c.isdigit() for c in original[i1:i2])
+        for tag, i1, i2, _j1, _j2 in opcodes
+    ]
     out = []
+    lead = ""  # capital letters held back from the preceding equal run
     i = 0
     while i < len(opcodes):
         tag, _i1, _i2, j1, j2 = opcodes[i]
         chunk = normalized[j1:j2]
         if tag == "equal":
-            out.append(chunk)
+            m = None
+            if i + 1 < len(opcodes) and rewrote_digits[i + 1]:
+                # Bounded search on the whole string, so the lookbehind sees
+                # the character before this run rather than the chunk edge.
+                m = _JA_LEADING_LETTERS_RE.search(normalized, j1, j2)
+            if m:
+                out.append(normalized[j1:m.start()])
+                lead = m.group(0)
+            else:
+                out.append(chunk)
+                lead = ""
             i += 1
             continue
 
@@ -258,13 +314,20 @@ def _ja_kana_spans(original: str, normalized: str) -> str:
         if i + 1 < len(opcodes) and opcodes[i + 1][0] == "equal":
             _, ni1, ni2, nj1, nj2 = opcodes[i + 1]
             m = _JA_COUNTER_RE.match(normalized, nj1, nj2)
+            if m is None and rewrote_digits[i]:
+                # No endpos here: a lookahead cannot see past it, so the run
+                # would look word-final at the chunk edge even mid-word.
+                m = _JA_LETTER_RUN_RE.match(normalized, nj1)
+                if m and m.end() > nj2:
+                    m = None
             if m:
                 extra = m.group(0)
                 # Shrink the following equal run so its already-emitted prefix
                 # isn't repeated when the loop reaches it next iteration.
                 opcodes[i + 1] = ("equal", ni1, ni2, nj1 + len(extra), nj2)
 
-        out.append(_to_kana(chunk + extra))
+        out.append(_to_kana(lead + chunk + extra))
+        lead = ""
         i += 1
     return "".join(out)
 
